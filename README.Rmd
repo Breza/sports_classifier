@@ -1,0 +1,116 @@
+---
+title: "An unnecessarily complicated way of classifying sports based on the final score"
+author: "Andrew Breza"
+date: ""
+output: github_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(conflicted)
+library(tidyverse)
+
+# Data sources:
+# https://www.retrosheet.org/gamelogs/glfields.txt
+# https://www.kaggle.com/nathanlauga/nba-games?select=games.csv
+# https://www.kaggle.com/martinellis/nhl-game-data
+# https://github.com/ryurko/nflscrapR-data/tree/master/games_data
+
+# This line might enable RMarkdown chunks using Julia. Might.
+options(JULIA_HOME = "C:/Users/abreza/AppData/Local/Programs/Julia 1.5.3/bin")
+
+# Custom functions
+predict_kmeans <- function(object, newdata){
+    centers <- object$centers
+    n_centers <- nrow(centers)
+    dist_mat <- as.matrix(dist(rbind(centers, newdata)))
+    dist_mat <- dist_mat[-seq(n_centers), seq(n_centers)]
+    max.col(-dist_mat)
+}
+
+# Load data
+sport <- read_csv(
+  "sport.csv", col_types = 
+  cols(
+    home_score = col_integer(),
+    away_score = col_integer(),
+    sport = col_character(),
+    cv = col_character()
+  )
+)
+sport_train <- sport %>% filter(cv == "train") %>% select(-cv)
+sport_test  <- sport %>% filter(cv == "test")  %>% select(-cv)
+rm(sport)
+```
+
+## "Iowa wins!"
+
+I'm always happy when I get this text from my dad. He's a superfan of his alma mater, the University of Iowa. I was excited to see that the Hawkeyes football team had pulled out a victory.
+
+"Final score 76-103."
+
+I scratch my head for a moment before realizing that he's talking about the Iowa men's basketball team, not the football team. This got me thinking. How hard would it be to classify my father's three favorite sports based only on the final score? In addition to cheering for Hawkeyes football and basketball, he's a lifelong fan of the Chicago Cubs, a Major League Baseball team.
+
+I'm a data scientist on paternity leave. I write this from my treadmill desk carrying my won't-sleep-unless-being-walked daughter in an Ergobaby. I believe that a thing worth doing is worth overdoing, so let's overengineer the heck out of this question before she wakes up. (EDIT: I ended up devoting several naptimes to this project.)
+
+I gathered a dataset of final scores for the three sports from 2009 into 2020 and saved it as sport.csv. Let's take a look.
+
+```{r load_data}
+sport %>% 
+  group_by(sport) %>% 
+  summarise(n = n(), home_mean = mean(home_score), away_mean = mean(away_score))
+```
+
+Three immediate thoughts:
+1. There are a lot more baseball games and a lot fewer football games.
+2. The average scores of all three sports are different.
+3. The home field advantage appears to exist in all three sports.
+
+The averages are different but what about the distributions? Let's plot the data and see how much the scores from different sports appear to overlap.
+
+```{r scatterplot}
+ggplot(sport, aes(x = home_score, y = away_score, color = sport)) +
+  geom_point()
+```
+
+I like to start an analysis project with a really simple model to give me a baseline. Any self-respecting algorithm should be able to easily beat the baseline model. The simplest model would be to take the most common category (or the mean for regression) and predict it for every datapoint. For this project, we could calculate the average score for each sport (combining home and away scores) and classifying each game based on the closest mean. 
+
+```{r baseline_calculate}
+one_dimension_centers <- sport_train %>% 
+  pivot_longer(cols = ends_with("score")) %>% 
+  group_by(sport) %>% 
+  summarise(mean = mean(value))
+```
+
+```{r baseline_predict}
+predict_one_dimension <- sport_test %>% 
+  mutate(!!pull(one_dimension_centers[1,1]) := abs((home_score + away_score) - pull(one_dimension_centers[1,2])),
+         !!pull(one_dimension_centers[2,1]) := abs((home_score + away_score) - pull(one_dimension_centers[2,2])),
+         !!pull(one_dimension_centers[3,1]) := abs((home_score + away_score) - pull(one_dimension_centers[3,2]))) %>% 
+  rowid_to_column() %>% 
+  select(-home_score, -away_score) %>% 
+  pivot_longer(cols = c(baseball, basketball, football), names_to = "guess") %>% 
+  group_by(rowid) %>% 
+  filter(value == min(value)) %>% 
+  ungroup() %>% 
+  arrange(rowid) %>% 
+  select(guess)
+```
+
+How can we test the accuracy of our model? We're going to be building several models, let's create a centralized approach to assessing accuracy that we can use for all of our models. In addition to making our code more efficient, using the same function for assessing all of our models means we can create apples-to-apples comparisons and it lets us change our metric. For now, let's use accuracy as our metric.
+
+```{r predict_function}
+predict_sport <- function(guess) {
+  if(is.data.frame(guess)) {
+    guess <- pull(guess)
+  }
+  mean(guess == sport_test$sport)
+}
+```
+
+```{r predict_one_dimension}
+predict_sport(predict_one_dimension)
+```
+
+Our baseline model correctly guesses the right sport 91% of the time. Not a bad start.
+
